@@ -1,0 +1,14 @@
+apiVersion: db.redis.io/v1
+kind: RedisCluster
+metadata:
+  labels:
+    app.kubernetes.io/name: operator
+    app.kubernetes.io/managed-by: kustomize
+  name: redis-sample
+spec:
+  # 这里对应你 Go 代码里的 Struct
+  replicas: 3
+  image: "redis:6.2"
+  port: 6379
+  storageSize: "1Gi"
+  enableSentinel: true

@@ -1,0 +1,84 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: redisclusters.db.redis.io
+spec:
+  group: db.redis.io
+  names:
+    kind: RedisCluster
+    listKind: RedisClusterList
+    plural: redisclusters
+    singular: rediscluster
+  scope: Namespaced
+  versions:
+  - name: v1
+    schema:
+      openAPIV3Schema:
+        description: RedisCluster is the Schema for the redisclusters API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of RedisCluster
+            properties:
+              enableSentinel:
+                description: |-
+                  LeaderFollowerConfig 对应“哨兵集群”配置
+                  标记是否开启哨兵模式
+                type: boolean
+              image:
+                description: Image 是 Redis 的镜像版本，例如 "redis:6.0"
+                type: string
+              port:
+                description: Port 是 Redis 服务端口
+                format: int32
+                type: integer
+              replicas:
+                description: Replicas 定义集群节点数量，对应 StatefulSet 副本控制
+                format: int32
+                minimum: 1
+                type: integer
+              storageSize:
+                description: |-
+                  StorageConfig 对应“PVC 模板与数据持久化”
+                  定义申请多大的磁盘，例如 "1Gi"
+                type: string
+            type: object
+          status:
+            description: status defines the observed state of RedisCluster
+            properties:
+              readyReplicas:
+                description: 显示当前就绪的节点数
+                format: int32
+                type: integer
+              state:
+                description: 显示集群当前状态：Creating, Running, Failed
+                type: string
+            required:
+            - readyReplicas
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
