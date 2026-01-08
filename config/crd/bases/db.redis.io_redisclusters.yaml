@@ -40,37 +40,74 @@ spec:
             description: spec defines the desired state of RedisCluster
             properties:
               enableSentinel:
-                description: |-
-                  LeaderFollowerConfig 对应“哨兵集群”配置
-                  标记是否开启哨兵模式
+                description: EnableSentinel 是否启用哨兵模式
                 type: boolean
               image:
-                description: Image 是 Redis 的镜像版本，例如 "redis:6.0"
+                description: Image Redis 镜像版本
+                type: string
+              password:
+                description: Password Redis 认证密码
                 type: string
               port:
-                description: Port 是 Redis 服务端口
+                description: Port Redis 服务端口
                 format: int32
                 type: integer
               replicas:
-                description: Replicas 定义集群节点数量，对应 StatefulSet 副本控制
+                description: Replicas 定义集群节点数量
                 format: int32
                 minimum: 1
                 type: integer
+              sentinelConfig:
+                description: SentinelConfig 哨兵模式详细配置（仅在 EnableSentinel 为 true 时生效）
+                properties:
+                  downAfterMilliseconds:
+                    default: 5000
+                    description: DownAfterMilliseconds 毫秒级，主节点无响应超时时间
+                    format: int32
+                    minimum: 1000
+                    type: integer
+                  failoverTimeoutMilliseconds:
+                    default: 10000
+                    description: FailoverTimeoutMilliseconds 毫秒级，故障转移超时时间
+                    format: int32
+                    minimum: 1000
+                    type: integer
+                  password:
+                    description: Password Sentinel 认证密码（如果 Redis 设置了密码）
+                    type: string
+                  port:
+                    default: 26379
+                    description: Port Sentinel 服务端口
+                    format: int32
+                    maximum: 65535
+                    minimum: 1024
+                    type: integer
+                  quorum:
+                    default: 2
+                    description: Quorum 判断主节点下线所需的投票数
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  replicas:
+                    default: 3
+                    description: Replicas 定义 Sentinel 副本数量
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
               storageSize:
-                description: |-
-                  StorageConfig 对应“PVC 模板与数据持久化”
-                  定义申请多大的磁盘，例如 "1Gi"
+                description: StorageSize 存储卷大小
                 type: string
             type: object
           status:
             description: status defines the observed state of RedisCluster
             properties:
               readyReplicas:
-                description: 显示当前就绪的节点数
+                description: ReadyReplicas 当前就绪的副本数量
                 format: int32
                 type: integer
               state:
-                description: 显示集群当前状态：Creating, Running, Failed
+                description: State 集群状态
                 type: string
             required:
             - readyReplicas

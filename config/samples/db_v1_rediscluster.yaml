@@ -6,9 +6,27 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: redis-sample
 spec:
-  # 这里对应你 Go 代码里的 Struct
+  # Redis 基本配置
   replicas: 3
-  image: "redis:6.2"
+  image: "redis:7.0"
   port: 6379
   storageSize: "1Gi"
+
+  # 密码认证（可选）
+  password: "your-redis-password-here"
+
+  # 哨兵模式配置
   enableSentinel: true
+  sentinelConfig:
+    # Sentinel 副本数量（建议奇数个，如 3、5、7）
+    replicas: 3
+    # Sentinel 服务端口
+    port: 26379
+    # 判断主节点下线所需的投票数
+    quorum: 2
+    # 主节点无响应超时时间（毫秒）
+    downAfterMilliseconds: 5000
+    # 故障转移超时时间（毫秒）
+    failoverTimeoutMilliseconds: 10000
+    # Sentinel 认证密码（如果 Redis 设置了密码，这里也需要设置）
+    password: "your-redis-password-here"
