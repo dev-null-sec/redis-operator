@@ -41,7 +41,7 @@ Reconcile 循环：
 - Go 1.24.6+
 - Docker 17.03+
 - kubectl 1.11.3+
-- Kubernetes 1.11.3+
+- Kubernetes 1.29+
 
 ### 部署
 
