@@ -335,7 +335,7 @@ func (r *RedisClusterReconciler) saveRedisDataBeforeDeletion(ctx context.Context
 		// 执行 BGSAVE（后台保存，不阻塞）
 		if err := rdb.BgSave(ctx).Err(); err != nil {
 			logger.Info("执行 BGSAVE 失败", "pod", pod.Name, "error", err)
-			// 继续处理其他节点，不因为单个节点失败而停止
+			// 继续处理其他 Sentinel，不因为单个节点失败而停止
 		} else {
 			logger.Info("成功执行 BGSAVE", "pod", pod.Name)
 		}
