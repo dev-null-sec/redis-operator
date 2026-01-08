@@ -121,6 +121,15 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// 6. 更新 RedisCluster 状态
 	redis.Status.ReadyReplicas = sts.Status.ReadyReplicas
 	redis.Status.State = "Running"
+
+	// 7. 如果启用哨兵模式，检测故障转移和健康状态
+	if redis.Spec.EnableSentinel && sts.Status.ReadyReplicas == redis.Spec.Replicas {
+		if err := r.checkFailoverAndHealth(ctx, redis); err != nil {
+			logger.Error(err, "故障转移和健康检查失败")
+			// 不返回错误，避免频繁重试
+		}
+	}
+
 	if err := r.Status().Update(ctx, redis); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -213,6 +222,7 @@ func (r *RedisClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&dbv1.RedisCluster{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
 		Complete(r)
 }
 
@@ -337,9 +347,66 @@ func (r *RedisClusterReconciler) saveRedisDataBeforeDeletion(ctx context.Context
 
 // removeSentinelMonitoring 从 Sentinel 中注销监控
 func (r *RedisClusterReconciler) removeSentinelMonitoring(ctx context.Context, redis *dbv1.RedisCluster) error {
-	// TODO: 实现从 Sentinel 配置中移除监控的逻辑
-	// 这需要连接到 Sentinel Pod 并执行 SENTINEL REMOVE 命令
-	log.FromContext(ctx).Info("移除 Sentinel 监控", "name", redis.Name)
+	logger := log.FromContext(ctx)
+
+	// 1. 获取所有 Sentinel Pod
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(redis.Namespace),
+		client.MatchingLabels(map[string]string{
+			"app":        redis.Name,
+			"component": "sentinel",
+		}),
+	}
+
+	if err := r.List(ctx, podList, listOpts...); err != nil {
+		return fmt.Errorf("获取 Sentinel Pod 列表失败: %w", err)
+	}
+
+	if len(podList.Items) == 0 {
+		logger.Info("没有找到 Sentinel Pod，跳过注销", "name", redis.Name)
+		return nil
+	}
+
+	// 2. 连接每个 Sentinel 并移除监控
+	sentinelPort := int32(26379)
+	if redis.Spec.SentinelConfig != nil && redis.Spec.SentinelConfig.Port != 0 {
+		sentinelPort = redis.Spec.SentinelConfig.Port
+	}
+
+	masterName := "mymaster"
+	successCount := 0
+
+	for _, pod := range podList.Items {
+		sentinelDNS := fmt.Sprintf("%s.%s-sentinel.%s.svc.cluster.local",
+			pod.Name, redis.Name, redis.Namespace)
+
+		// 创建 Sentinel 客户端
+		sentinelClient := goRedis.NewClient(&goRedis.Options{
+			Addr:        fmt.Sprintf("%s:%d", sentinelDNS, sentinelPort),
+			Password:    redis.Spec.Password,
+			DialTimeout: 2 * time.Second,
+			MaxRetries:  3,
+		})
+
+		// 执行 SENTINEL REMOVE 命令
+		result, err := sentinelClient.Do(ctx, "SENTINEL", "REMOVE", masterName).Result()
+		if err != nil {
+			logger.Info("Sentinel REMOVE 失败", "pod", pod.Name, "error", err)
+			// 继续处理其他 Sentinel
+		} else {
+			logger.Info("Sentinel REMOVE 成功", "pod", pod.Name, "result", result)
+			successCount++
+		}
+
+		sentinelClient.Close()
+	}
+
+	if successCount == 0 {
+		return fmt.Errorf("所有 Sentinel 节点都移除监控失败")
+	}
+
+	logger.Info("完成 Sentinel 监控注销", "name", redis.Name, "success", successCount, "total", len(podList.Items))
 	return nil
 }
 
@@ -601,4 +668,126 @@ func (r *RedisClusterReconciler) constructSentinelStatefulSet(redis *dbv1.RedisC
 	}
 	ctrl.SetControllerReference(redis, sts, r.Scheme)
 	return sts
+}
+
+// checkFailoverAndHealth 检测故障转移和节点健康状态
+func (r *RedisClusterReconciler) checkFailoverAndHealth(ctx context.Context, redis *dbv1.RedisCluster) error {
+	logger := log.FromContext(ctx)
+
+	// 1. 获取当前 Master 地址
+	currentMaster, err := r.getCurrentMasterFromSentinel(ctx, redis)
+	if err != nil {
+		logger.Error(err, "获取当前 Master 失败")
+		return err
+	}
+
+	// 2. 检测是否发生了故障转移
+	expectedMaster := fmt.Sprintf("%s-0.%s.%s.svc.cluster.local", redis.Name, redis.Name, redis.Namespace)
+	if currentMaster != expectedMaster {
+		logger.Info("检测到故障转移", "old-master", expectedMaster, "new-master", currentMaster)
+		// 更新主从配置
+		if err := r.reconfigureAfterFailover(ctx, redis, currentMaster); err != nil {
+			logger.Error(err, "故障转移后重新配置失败")
+			return err
+		}
+	}
+
+	// 3. 检查所有节点健康状态
+	if err := r.checkNodesHealth(ctx, redis); err != nil {
+		logger.Error(err, "节点健康检查失败")
+		return err
+	}
+
+	return nil
+}
+
+// getCurrentMasterFromSentinel 从 Sentinel 获取当前 Master 地址
+func (r *RedisClusterReconciler) getCurrentMasterFromSentinel(ctx context.Context, redis *dbv1.RedisCluster) (string, error) {
+	// 获取第一个 Sentinel Pod
+	sentinelPodName := fmt.Sprintf("%s-sentinel-0", redis.Name)
+	sentinelDNS := fmt.Sprintf("%s.%s-sentinel.%s.svc.cluster.local", sentinelPodName, redis.Name, redis.Namespace)
+
+	sentinelPort := int32(26379)
+	if redis.Spec.SentinelConfig != nil && redis.Spec.SentinelConfig.Port != 0 {
+		sentinelPort = redis.Spec.SentinelConfig.Port
+	}
+
+	// 连接到 Sentinel
+	sentinelClient := goRedis.NewSentinelClient(&goRedis.Options{
+		Addr:        fmt.Sprintf("%s:%d", sentinelDNS, sentinelPort),
+		Password:    redis.Spec.Password,
+		DialTimeout: 2 * time.Second,
+		MaxRetries:  3,
+	})
+	defer sentinelClient.Close()
+
+	// 获取 Master 地址（返回 []string，格式为 [host, port]）
+	addrs, err := sentinelClient.GetMasterAddrByName(ctx, "mymaster").Result()
+	if err != nil {
+		return "", fmt.Errorf("从 Sentinel 获取 Master 地址失败: %w", err)
+	}
+
+	if len(addrs) < 2 {
+		return "", fmt.Errorf("无效的 Master 地址格式: %v", addrs)
+	}
+
+	// 返回 host 部分
+	return addrs[0], nil
+}
+
+// reconfigureAfterFailover 故障转移后重新配置主从关系
+func (r *RedisClusterReconciler) reconfigureAfterFailover(ctx context.Context, redis *dbv1.RedisCluster, newMaster string) error {
+	logger := log.FromContext(ctx)
+
+	// 1. 将旧 Master（redis-0）配置为新 Master 的 Slave
+	oldMasterPod := fmt.Sprintf("%s-0", redis.Name)
+	oldMasterDNS := fmt.Sprintf("%s.%s.%s.svc.cluster.local", oldMasterPod, redis.Name, redis.Namespace)
+
+	rdb := goRedis.NewClient(&goRedis.Options{
+		Addr:        oldMasterDNS + ":6379",
+		Password:    redis.Spec.Password,
+		DialTimeout: 2 * time.Second,
+	})
+	defer rdb.Close()
+
+	if err := rdb.SlaveOf(ctx, newMaster, "6379").Err(); err != nil {
+		logger.Error(err, "配置旧 Master 为 Slave 失败", "old-master", oldMasterDNS)
+		return err
+	}
+
+	logger.Info("成功配置旧 Master 为新 Master 的 Slave", "old-master", oldMasterDNS, "new-master", newMaster)
+	return nil
+}
+
+// checkNodesHealth 检查所有 Redis 节点的健康状态
+func (r *RedisClusterReconciler) checkNodesHealth(ctx context.Context, redis *dbv1.RedisCluster) error {
+	logger := log.FromContext(ctx)
+
+	unhealthyCount := 0
+
+	for i := 0; i < int(redis.Spec.Replicas); i++ {
+		podName := fmt.Sprintf("%s-%d", redis.Name, i)
+		podDNS := fmt.Sprintf("%s.%s.%s.svc.cluster.local", podName, redis.Name, redis.Namespace)
+
+		rdb := goRedis.NewClient(&goRedis.Options{
+			Addr:        podDNS + ":6379",
+			Password:    redis.Spec.Password,
+			DialTimeout: 2 * time.Second,
+			MaxRetries:  1, // 快速失败
+		})
+
+		// 执行 PING 命令检查健康
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			logger.Info("节点不健康", "pod", podName, "error", err)
+			unhealthyCount++
+		}
+
+		rdb.Close()
+	}
+
+	if unhealthyCount > 0 {
+		logger.Info("健康检查完成", "unhealthy", unhealthyCount, "total", redis.Spec.Replicas)
+	}
+
+	return nil
 }
