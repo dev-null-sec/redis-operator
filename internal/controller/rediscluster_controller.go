@@ -312,7 +312,7 @@ func (r *RedisClusterReconciler) handleDeletion(ctx context.Context, redis *dbv1
 func (r *RedisClusterReconciler) saveRedisDataBeforeDeletion(ctx context.Context, redis *dbv1.RedisCluster) error {
 	logger := log.FromContext(ctx)
 
-	// 获取所有 Redis Pod
+	// 获取 Redis Pod 列表
 	podList := &corev1.PodList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(redis.Namespace),
